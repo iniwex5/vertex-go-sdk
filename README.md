@@ -1,16 +1,16 @@
 # Vertex Go SDK
 
-Unofficial Go SDK for [Vertex](https://github.com/vertex-app/vertex).
+[Vertex](https://github.com/vertex-app/vertex) 的非官方 Go 语言 SDK。
 
-## Installation
+## 安装
 
 ```bash
 go get github.com/your-username/vertex-go-sdk
 ```
 
-## Usage
+## 使用方法
 
-### Authentication
+### 初始化客户端
 
 ```go
 package main
@@ -21,20 +21,22 @@ import (
 )
 
 func main() {
+	// 初始化客户端
 	client, err := vertex.NewClient("http://127.0.0.1:3000")
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	// 登录
 	if err := client.Login("admin", "password"); err != nil {
 		log.Fatal(err)
 	}
 
-	// Now you can call API methods
+	// 现在可以调用 API 方法了
 }
 ```
 
-### List RSS Tasks
+### 获取 RSS 任务列表
 
 ```go
 rssList, err := client.ListRss()
@@ -42,36 +44,37 @@ if err != nil {
     log.Fatal(err)
 }
 for _, rss := range rssList {
-    fmt.Printf("RSS: %s (Enable: %v)\n", rss.Alias, rss.Enable)
+    fmt.Printf("RSS 任务: %s (启用: %v)\n", rss.Alias, rss.Enable)
 }
 ```
 
-### Manage Rules
+### 管理规则
 
 ```go
-// List RSS Rules
+// 获取 RSS 选种规则列表
 rules, err := client.ListRssRules()
 
-// List Delete Rules
+// 获取删种规则列表
 delRules, err := client.ListDeleteRules()
 ```
 
-### View History
+### 查看历史记录
 
 ```go
+// 查询第一页，每页 10 条
 history, err := client.ListRssHistory(1, 10, "")
 ```
 
-## Features
+## 功能特性
 
-- Server Management
-- Downloader Management
-- RSS Task Management
-- RSS/Select Rule Management
-- Delete Rule Management
-- Torrent Management & History
-- Monitoring (NetSpeed, CPU, Memory, etc.)
+- 服务器状态监控与管理
+- 下载器管理 (由于接口限制，部分功能可能需要特定权限)
+- RSS 任务管理 (增删改查)
+- RSS 选种规则 (RSS Rules) 管理
+- 删种规则 (Delete Rules) 管理
+- 种子管理与历史记录查询
+- 系统监控 (网速、CPU、内存等)
 
-## License
+## 许可证
 
 MIT
