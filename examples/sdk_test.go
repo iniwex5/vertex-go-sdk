@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -41,12 +39,12 @@ func TestMain(m *testing.M) {
 	host := getEnv("VERTEX_HOST", "http://127.0.0.1:3000")
 	username := getEnv("VERTEX_USER", "admin")
 	password := getEnv("VERTEX_PASS", "password")
-	cookieFile := "cookies.json"
+	cookieFile := "cookies"
 
-	// 2. 尝试从外部读取初始 Cookie (可空)
-	var initialCookies []*http.Cookie
+	// 2. 尝试从外部读取初始 Cookie (原始字符串格式)
+	var initialCookies string
 	if data, err := os.ReadFile(cookieFile); err == nil {
-		_ = json.Unmarshal(data, &initialCookies)
+		initialCookies = string(data)
 	}
 
 	// 3. 执行全局初始化 (只执行一次)
@@ -66,11 +64,9 @@ func TestMain(m *testing.M) {
 
 	// 4. 保存最新 Cookie 供下次复用
 	cookies, _ := client.GetCookies()
-	if len(cookies) > 0 {
+	if cookies != "" {
 		fmt.Println("✅ Vertex SDK 共享实例初始化成功 (已持有有效会话)")
-		if data, err := json.MarshalIndent(cookies, "", "  "); err == nil {
-			_ = os.WriteFile(cookieFile, data, 0644)
-		}
+		_ = os.WriteFile(cookieFile, []byte(cookies), 0644)
 	} else {
 		fmt.Println("⚠️ SDK 已初始化，但未获取到 Cookie (可能尚未登录或无需鉴权)")
 	}

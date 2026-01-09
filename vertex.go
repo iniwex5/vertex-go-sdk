@@ -33,13 +33,13 @@ type Client struct {
 // ClientOption 是用于配置 Client 的函数选项模式
 type ClientOption func(*Client) error
 
-// WithAuth 提供用户名、密码和可选的初始 Cookie。
+// WithAuth 提供用户名、密码和可选的初始 Cookie (原始字符串格式)。
 // 如果提供了 Cookie，SDK 会优先尝试使用它进行认证；如果无效或未提供，则自动切换到账号密码登录。
-func WithAuth(username, password string, cookies []*http.Cookie) ClientOption {
+func WithAuth(username, password, cookies string) ClientOption {
 	return func(c *Client) error {
 		c.username = username
 		c.password = password
-		if len(cookies) > 0 {
+		if cookies != "" {
 			return c.SetCookies(cookies)
 		}
 		return nil
@@ -131,21 +131,37 @@ func (c *Client) Login(ctx context.Context, username, password string) error {
 	return err
 }
 
-// GetCookies 获取当前会话状态，外部可自行持久化保存
-func (c *Client) GetCookies() ([]*http.Cookie, error) {
+// GetCookies 获取当前会话状态，以原始字符串格式返回 (name=val; name2=val2)
+func (c *Client) GetCookies() (string, error) {
 	u, err := url.Parse(c.BaseURL)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return c.Req.GetClient().Jar.Cookies(u), nil
+	cookies := c.Req.GetClient().Jar.Cookies(u)
+	if len(cookies) == 0 {
+		return "", nil
+	}
+
+	header := http.Header{}
+	req := http.Request{Header: header}
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	return header.Get("Cookie"), nil
 }
 
-// SetCookies 手动设置会话 Cookie
-func (c *Client) SetCookies(cookies []*http.Cookie) error {
+// SetCookies 手动设置会话 Cookie (通过原始字符串格式)
+func (c *Client) SetCookies(cookieStr string) error {
 	u, err := url.Parse(c.BaseURL)
 	if err != nil {
 		return err
 	}
+
+	header := http.Header{}
+	header.Add("Cookie", cookieStr)
+	req := http.Request{Header: header}
+	cookies := req.Cookies()
+
 	c.Req.GetClient().Jar.SetCookies(u, cookies)
 	return nil
 }
