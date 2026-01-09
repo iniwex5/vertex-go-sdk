@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -14,12 +15,6 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// Client 是 Vertex SDK 的主要入口点
-type Client struct {
-	BaseURL string        // Vertex 服务器的基础 URL (例如 "http://127.0.0.1:3000")
-	Req     *resty.Client // 内部使用的 Resty 客户端
-}
-
 // Response 是通用的 API 响应结构
 type Response struct {
 	Success bool            `json:"success"` // 请求是否成功
@@ -27,35 +22,94 @@ type Response struct {
 	Data    json.RawMessage `json:"data"`    // 具体的响应数据
 }
 
+// Client 是 Vertex SDK 的主要入口点
+type Client struct {
+	BaseURL  string        // Vertex 服务器的基础 URL (例如 "http://127.0.0.1:3000")
+	Req      *resty.Client // 内部使用的 Resty 客户端
+	username string        // 暂存用户名用于初始化登录
+	password string        // 暂存密码用于初始化登录
+}
+
+// ClientOption 是用于配置 Client 的函数选项模式
+type ClientOption func(*Client) error
+
+// WithAuth 提供用户名、密码和可选的初始 Cookie。
+// 如果提供了 Cookie，SDK 会优先尝试使用它进行认证；如果无效或未提供，则自动切换到账号密码登录。
+func WithAuth(username, password string, cookies []*http.Cookie) ClientOption {
+	return func(c *Client) error {
+		c.username = username
+		c.password = password
+		if len(cookies) > 0 {
+			return c.SetCookies(cookies)
+		}
+		return nil
+	}
+}
+
+// WithTimeout 配置请求超时时间
+func WithTimeout(d time.Duration) ClientOption {
+	return func(c *Client) error {
+		c.Req.SetTimeout(d)
+		return nil
+	}
+}
+
 // NewClient 创建一个新的 Vertex 客户端
-func NewClient(host string) (*Client, error) {
-	client := resty.New()
-	client.SetBaseURL(host)
+// ctx: 上下文用于控制请求周期
+// host: 服务器地址 "http://127.0.0.1:3000"
+// opts: 可选配置，如 WithAuth
+func NewClient(ctx context.Context, host string, opts ...ClientOption) (*Client, error) {
+	restyClient := resty.New()
+	restyClient.SetBaseURL(host)
 
-	// 设置重试策略
-	client.SetRetryCount(3)
-	client.SetRetryWaitTime(200 * time.Millisecond)
-	client.SetRetryMaxWaitTime(3 * time.Second)
-	client.SetTimeout(5 * time.Second)
+	// 默认重试与超时配置
+	restyClient.SetRetryCount(3)
+	restyClient.SetRetryWaitTime(200 * time.Millisecond)
+	restyClient.SetRetryMaxWaitTime(3 * time.Second)
+	restyClient.SetTimeout(10 * time.Second)
 
-	// 启用 Cookie Jar 以支持会话保持
+	// 初始化 Cookie 管理
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
-	client.SetCookieJar(jar)
+	restyClient.SetCookieJar(jar)
 
-	return &Client{
+	c := &Client{
 		BaseURL: host,
-		Req:     client,
-	}, nil
+		Req:     restyClient,
+	}
+
+	// 应用所有配置选项
+	for _, opt := range opts {
+		if err := opt(c); err != nil {
+			return nil, err
+		}
+	}
+
+	// 自动登录验证逻辑：
+	// 1. 如果已有 Cookie，验证其有效性 (通过调用 /api/user/get 接口检测)
+	u, _ := url.Parse(host)
+	loggedIn := false
+	if len(restyClient.GetClient().Jar.Cookies(u)) > 0 {
+		_, err := c.request(ctx, "GET", "/api/user/get", nil, nil)
+		if err == nil {
+			loggedIn = true
+		}
+	}
+
+	// 2. 如果 Cookie 无效且提供了账号密码，执行自动登录
+	if !loggedIn && c.username != "" && c.password != "" {
+		if err := c.Login(ctx, c.username, c.password); err != nil {
+			return nil, fmt.Errorf("认证失败: %w", err)
+		}
+	}
+
+	return c, nil
 }
 
-// Login 用于登录 Vertex 服务器
-// username: 用户名 (通常是 admin)
-// password: 密码 (明文)
-func (c *Client) Login(username, password string) error {
-	// 计算密码的 MD5 值
+// Login 执行登录操作，使用 MD5 加密密码
+func (c *Client) Login(ctx context.Context, username, password string) error {
 	hasher := md5.New()
 	hasher.Write([]byte(password))
 	md5Password := hex.EncodeToString(hasher.Sum(nil))
@@ -65,14 +119,11 @@ func (c *Client) Login(username, password string) error {
 		"password": md5Password,
 	}
 
-	_, err := c.post("/api/user/login", payload)
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err := c.post(ctx, "/api/user/login", payload)
+	return err
 }
 
-// GetCookies 获取当前会话的 Cookies
+// GetCookies 获取当前会话状态，外部可自行持久化保存
 func (c *Client) GetCookies() ([]*http.Cookie, error) {
 	u, err := url.Parse(c.BaseURL)
 	if err != nil {
@@ -81,7 +132,7 @@ func (c *Client) GetCookies() ([]*http.Cookie, error) {
 	return c.Req.GetClient().Jar.Cookies(u), nil
 }
 
-// SetCookies 设置会话的 Cookies
+// SetCookies 手动设置会话 Cookie
 func (c *Client) SetCookies(cookies []*http.Cookie) error {
 	u, err := url.Parse(c.BaseURL)
 	if err != nil {
@@ -95,9 +146,10 @@ func (c *Client) SetCookies(cookies []*http.Cookie) error {
 // 辅助方法 Helpers
 // ==========================================
 
-func (c *Client) request(method, path string, params map[string]string, body interface{}) (*Response, error) {
+// request 是内部通用的 HTTP 请求封装
+func (c *Client) request(ctx context.Context, method, path string, params map[string]string, body interface{}) (*Response, error) {
 	var apiResp Response
-	req := c.Req.R().SetResult(&apiResp)
+	req := c.Req.R().SetContext(ctx).SetResult(&apiResp)
 
 	if params != nil {
 		req.SetQueryParams(params)
@@ -112,47 +164,47 @@ func (c *Client) request(method, path string, params map[string]string, body int
 		return nil, err
 	}
 
-	// 某些情况 API 可能返回非 JSON 错误（如 404 HTML），需要简单检查
 	if resp.IsError() {
-		return nil, fmt.Errorf("HTTP Error: %d %s", resp.StatusCode(), resp.Status())
+		return nil, fmt.Errorf("HTTP 错误: %d %s", resp.StatusCode(), resp.Status())
 	}
 
-	// 即使 HTTP 状态码是 200，API 内部仍可能返回 success: false
 	if !apiResp.Success {
-		return nil, fmt.Errorf("API 错误: %s", apiResp.Message)
+		return nil, fmt.Errorf("API 业务错误: %s", apiResp.Message)
 	}
 
 	return &apiResp, nil
 }
 
-func (c *Client) get(path string, params map[string]string) (*Response, error) {
-	return c.request("GET", path, params, nil)
+// get 发起 GET 请求
+func (c *Client) get(ctx context.Context, path string, params map[string]string) (*Response, error) {
+	return c.request(ctx, "GET", path, params, nil)
 }
 
-func (c *Client) post(path string, body interface{}) (*Response, error) {
-	return c.request("POST", path, nil, body)
+// post 发起 POST 请求
+func (c *Client) post(ctx context.Context, path string, body interface{}) (*Response, error) {
+	return c.request(ctx, "POST", path, nil, body)
 }
 
 // ==========================================
 // 服务器管理 API (Server)
 // ==========================================
 
-// Server 代表一个服务器实例的配置
+// Server 代表 Vertex 管理的服务器信息
 type Server struct {
-	ID       string `json:"id"`       // 服务器 ID
+	ID       string `json:"id"`
 	Alias    string `json:"alias"`    // 别名
-	Host     string `json:"host"`     // IP 地址或域名
-	Port     int    `json:"port"`     // SSH 端口
-	User     string `json:"user"`     // SSH 用户名
-	Password string `json:"password"` // SSH 密码
+	Host     string `json:"host"`     // 地址
+	Port     int    `json:"port"`     // 端口
+	User     string `json:"user"`     // 用户名
+	Password string `json:"password"` // 密码
 	Enable   bool   `json:"enable"`   // 是否启用
-	Status   bool   `json:"status"`   // 连接状态
-	Used     bool   `json:"used"`     // 是否被使用
+	Status   bool   `json:"status"`   // 状态
+	Used     bool   `json:"used"`     // 是否已使用
 }
 
-// ListServers 获取服务器列表
-func (c *Client) ListServers() ([]Server, error) {
-	resp, err := c.get("/api/server/list", nil)
+// ListServers 获取所有服务器列表
+func (c *Client) ListServers(ctx context.Context) ([]Server, error) {
+	resp, err := c.get(ctx, "/api/server/list", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -164,10 +216,9 @@ func (c *Client) ListServers() ([]Server, error) {
 	return servers, nil
 }
 
-// GetServerNetSpeed 获取所有连接服务器的实时网速
-// 返回一个 Map，Key 是服务器 ID，Value 是网速信息
-func (c *Client) GetServerNetSpeed() (map[string]interface{}, error) {
-	resp, err := c.get("/api/server/netSpeed", nil)
+// GetServerNetSpeed 获取服务器实时网速数据
+func (c *Client) GetServerNetSpeed(ctx context.Context) (map[string]interface{}, error) {
+	resp, err := c.get(ctx, "/api/server/netSpeed", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -182,9 +233,9 @@ func (c *Client) GetServerNetSpeed() (map[string]interface{}, error) {
 // 数据监控 API (Monitoring)
 // ==========================================
 
-// GetServerCpuUse 获取服务器 CPU 使用率
-func (c *Client) GetServerCpuUse() (map[string]interface{}, error) {
-	resp, err := c.get("/api/server/cpuUse", nil)
+// GetServerCpuUse 获取服务器 CPU 使用率监控
+func (c *Client) GetServerCpuUse(ctx context.Context) (map[string]interface{}, error) {
+	resp, err := c.get(ctx, "/api/server/cpuUse", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -195,9 +246,9 @@ func (c *Client) GetServerCpuUse() (map[string]interface{}, error) {
 	return data, nil
 }
 
-// GetServerMemoryUse 获取服务器内存使用率
-func (c *Client) GetServerMemoryUse() (map[string]interface{}, error) {
-	resp, err := c.get("/api/server/memoryUse", nil)
+// GetServerMemoryUse 获取服务器内存使用监控
+func (c *Client) GetServerMemoryUse(ctx context.Context) (map[string]interface{}, error) {
+	resp, err := c.get(ctx, "/api/server/memoryUse", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -208,9 +259,9 @@ func (c *Client) GetServerMemoryUse() (map[string]interface{}, error) {
 	return data, nil
 }
 
-// GetServerDiskUse 获取服务器磁盘使用率
-func (c *Client) GetServerDiskUse() (map[string]interface{}, error) {
-	resp, err := c.get("/api/server/diskUse", nil)
+// GetServerDiskUse 获取服务器磁盘使用监控
+func (c *Client) GetServerDiskUse(ctx context.Context) (map[string]interface{}, error) {
+	resp, err := c.get(ctx, "/api/server/diskUse", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -221,17 +272,17 @@ func (c *Client) GetServerDiskUse() (map[string]interface{}, error) {
 	return data, nil
 }
 
-// VnstatInfo 包含 vnStat 流量监控信息
+// VnstatInfo Vnstat 流量统计信息
 type VnstatInfo struct {
-	FiveMinute map[string]interface{} `json:"fiveminute"`
-	Hour       map[string]interface{} `json:"hour"`
-	Day        map[string]interface{} `json:"day"`
-	Month      map[string]interface{} `json:"month"`
+	FiveMinute map[string]interface{} `json:"fiveminute"` // 5分钟统计
+	Hour       map[string]interface{} `json:"hour"`       // 小时统计
+	Day        map[string]interface{} `json:"day"`        // 天统计
+	Month      map[string]interface{} `json:"month"`      // 月统计
 }
 
-// GetServerVnstat 获取指定服务器的流量统计信息
-func (c *Client) GetServerVnstat(serverID string) (*VnstatInfo, error) {
-	resp, err := c.get("/api/server/vnstat", map[string]string{"id": serverID})
+// GetServerVnstat 获取指定服务器的 Vnstat 流量统计数据
+func (c *Client) GetServerVnstat(ctx context.Context, serverID string) (*VnstatInfo, error) {
+	resp, err := c.get(ctx, "/api/server/vnstat", map[string]string{"id": serverID})
 	if err != nil {
 		return nil, err
 	}
@@ -246,35 +297,35 @@ func (c *Client) GetServerVnstat(serverID string) (*VnstatInfo, error) {
 // 下载器管理 API (Client/Downloader)
 // ==========================================
 
-// DownloaderConfig 下载器配置结构体
+// DownloaderConfig 下载器配置信息
 type DownloaderConfig struct {
-	ID                string   `json:"id,omitempty"`                // ID (新建时为空)
-	Alias             string   `json:"alias"`                       // 别名
-	Type              string   `json:"type"`                        // 类型: qbittorrent, transmission, deluge, etc.
-	ClientURL         string   `json:"clientUrl"`                   // 地址: http://1.2.3.4:8080
-	Username          string   `json:"username"`                    // 用户名
-	Password          string   `json:"password"`                    // 密码
-	Enable            bool     `json:"enable"`                      // 是否启用
-	AutoDelete        bool     `json:"autoDelete"`                  // 是否自动删除
+	ID                string   `json:"id,omitempty"`
+	Alias             string   `json:"alias"`     // 别名
+	Type              string   `json:"type"`      // 类型 (如 qBittorrent)
+	ClientURL         string   `json:"clientUrl"` // 地址
+	Username          string   `json:"username"`
+	Password          string   `json:"password"`
+	Enable            bool     `json:"enable"`
+	AutoDelete        bool     `json:"autoDelete"`
 	SavePath          string   `json:"savePath"`                    // 默认保存路径
-	SameServerClients []string `json:"sameServerClients,omitempty"` // 同服务器的其他客户端 ID
+	SameServerClients []string `json:"sameServerClients,omitempty"` // 同服务器下载器
 }
 
-// DownloaderInfo 下载器运行时信息
+// DownloaderInfo 下载器实时状态信息
 type DownloaderInfo struct {
 	DownloaderConfig
 	Status          bool    `json:"status"`          // 连接状态
-	UploadSpeed     float64 `json:"uploadSpeed"`     // 上传速度 (B/s)
-	DownloadSpeed   float64 `json:"downloadSpeed"`   // 下载速度 (B/s)
-	AllTimeUpload   int64   `json:"allTimeUpload"`   // 总上传量 (B)
-	AllTimeDownload int64   `json:"allTimeDownload"` // 总下载量 (B)
-	LeechingCount   int     `json:"leechingCount"`   // 下载中任务数
-	SeedingCount    int     `json:"seedingCount"`    // 做种中任务数
+	UploadSpeed     float64 `json:"uploadSpeed"`     // 上传速度
+	DownloadSpeed   float64 `json:"downloadSpeed"`   // 下载速度
+	AllTimeUpload   int64   `json:"allTimeUpload"`   // 累计上传
+	AllTimeDownload int64   `json:"allTimeDownload"` // 累计下载
+	LeechingCount   int     `json:"leechingCount"`   // 下载中数量
+	SeedingCount    int     `json:"seedingCount"`    // 做种中数量
 }
 
-// ListDownloaders 获取详细的下载器列表
-func (c *Client) ListDownloaders() ([]DownloaderInfo, error) {
-	resp, err := c.get("/api/downloader/list", nil)
+// ListDownloaders 获取所有下载器列表
+func (c *Client) ListDownloaders(ctx context.Context) ([]DownloaderInfo, error) {
+	resp, err := c.get(ctx, "/api/downloader/list", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -285,11 +336,9 @@ func (c *Client) ListDownloaders() ([]DownloaderInfo, error) {
 	return items, nil
 }
 
-// FindDownloaderByIP 根据 IP 查找下载器
-// ip: 目标 IP 地址
-// 返回第一个匹配的下载器信息，如果没有找到则返回 nil
-func (c *Client) FindDownloaderByIP(ip string) (*DownloaderInfo, error) {
-	downloaders, err := c.ListDownloaders()
+// FindDownloaderByIP 根据 IP 地址查找下载器
+func (c *Client) FindDownloaderByIP(ctx context.Context, ip string) (*DownloaderInfo, error) {
+	downloaders, err := c.ListDownloaders(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -297,27 +346,22 @@ func (c *Client) FindDownloaderByIP(ip string) (*DownloaderInfo, error) {
 	for _, d := range downloaders {
 		u, err := url.Parse(d.ClientURL)
 		if err != nil {
-			continue // 忽略解析失败的 URL
+			continue
 		}
-		// 获取 Host 部分 (可能是 ip:port 或只是 ip)
 		host := u.Host
-		// 如果包含端口，去除端口
 		if idx := strings.Index(host, ":"); idx != -1 {
 			host = host[:idx]
 		}
-
 		if host == ip {
 			return &d, nil
 		}
 	}
-	return nil, nil // 未找到
+	return nil, nil
 }
 
-// FindDownloadersByAlias 根据别名(Alias)查找下载器
-// alias: 搜索关键词 (支持模糊匹配)
-// 返回所有别名中包含该关键词的下载器列表
-func (c *Client) FindDownloadersByAlias(searchKey string) ([]DownloaderInfo, error) {
-	downloaders, err := c.ListDownloaders()
+// FindDownloadersByAlias 根据别名模糊查找下载器
+func (c *Client) FindDownloadersByAlias(ctx context.Context, searchKey string) ([]DownloaderInfo, error) {
+	downloaders, err := c.ListDownloaders(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -331,22 +375,22 @@ func (c *Client) FindDownloadersByAlias(searchKey string) ([]DownloaderInfo, err
 	return matched, nil
 }
 
-// AddDownloader 添加新的下载器
-func (c *Client) AddDownloader(cfg DownloaderConfig) error {
-	_, err := c.post("/api/downloader/add", cfg)
+// AddDownloader 添加下载器
+func (c *Client) AddDownloader(ctx context.Context, cfg DownloaderConfig) error {
+	_, err := c.post(ctx, "/api/downloader/add", cfg)
 	return err
 }
 
-// ModifyDownloader 修改现有的下载器
-func (c *Client) ModifyDownloader(cfg DownloaderConfig) error {
-	_, err := c.post("/api/downloader/modify", cfg)
+// ModifyDownloader 修改下载器配置
+func (c *Client) ModifyDownloader(ctx context.Context, cfg DownloaderConfig) error {
+	_, err := c.post(ctx, "/api/downloader/modify", cfg)
 	return err
 }
 
-// DeleteDownloader 删除下载器
-func (c *Client) DeleteDownloader(id string) error {
+// DeleteDownloader 删除指定下载器
+func (c *Client) DeleteDownloader(ctx context.Context, id string) error {
 	payload := map[string]string{"id": id}
-	_, err := c.post("/api/downloader/delete", payload)
+	_, err := c.post(ctx, "/api/downloader/delete", payload)
 	return err
 }
 
@@ -356,21 +400,21 @@ func (c *Client) DeleteDownloader(id string) error {
 
 // RssConfig RSS 任务配置
 type RssConfig struct {
-	ID                string   `json:"id,omitempty"`      // ID
-	Alias             string   `json:"alias"`             // 别名
-	RssUrl            string   `json:"rssUrl"`            // RSS 链接
-	Client            string   `json:"client"`            // 下载客户端 ID
-	Enable            bool     `json:"enable"`            // 是否启用
-	Push              bool     `json:"push"`              // 是否推送到通知
-	AutoReseed        bool     `json:"autoReseed"`        // 是否自动辅种
-	AcceptRules       []string `json:"acceptRules"`       // 接受规则 ID 列表
-	RejectRules       []string `json:"rejectRules"`       // 拒绝规则 ID 列表
-	SameServerClients []string `json:"sameServerClients"` // 同服客户端
+	ID                string   `json:"id,omitempty"`
+	Alias             string   `json:"alias"`  // 任务名
+	RssUrl            string   `json:"rssUrl"` // RSS 链接
+	Client            string   `json:"client"` // 使用的下载器ID
+	Enable            bool     `json:"enable"`
+	Push              bool     `json:"push"`        // 是否推送通知
+	AutoReseed        bool     `json:"autoReseed"`  // 自动辅种
+	AcceptRules       []string `json:"acceptRules"` // 选种规则列表
+	RejectRules       []string `json:"rejectRules"` // 拒绝规则列表
+	SameServerClients []string `json:"sameServerClients"`
 }
 
-// ListRss 获取 RSS 任务列表
-func (c *Client) ListRss() ([]RssConfig, error) {
-	resp, err := c.get("/api/rss/list", nil)
+// ListRss 获取所有 RSS 任务列表
+func (c *Client) ListRss(ctx context.Context) ([]RssConfig, error) {
+	resp, err := c.get(ctx, "/api/rss/list", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -381,11 +425,9 @@ func (c *Client) ListRss() ([]RssConfig, error) {
 	return items, nil
 }
 
-// FindRssByAlias 根据名称(Alias)查找 RSS 任务
-// alias: 搜索关键词 (支持模糊匹配)
-// 返回所有名称中包含该关键词的 RSS 任务列表
-func (c *Client) FindRssByAlias(searchKey string) ([]RssConfig, error) {
-	rssList, err := c.ListRss()
+// FindRssByAlias 根据别名模糊查找 RSS 任务
+func (c *Client) FindRssByAlias(ctx context.Context, searchKey string) ([]RssConfig, error) {
+	rssList, err := c.ListRss(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -400,36 +442,31 @@ func (c *Client) FindRssByAlias(searchKey string) ([]RssConfig, error) {
 }
 
 // AddRss 添加 RSS 任务
-func (c *Client) AddRss(cfg RssConfig) error {
-	_, err := c.post("/api/rss/add", cfg)
+func (c *Client) AddRss(ctx context.Context, cfg RssConfig) error {
+	_, err := c.post(ctx, "/api/rss/add", cfg)
 	return err
 }
 
-// ModifyRss 修改 RSS 任务
-func (c *Client) ModifyRss(cfg RssConfig) error {
-	_, err := c.post("/api/rss/modify", cfg)
+// ModifyRss 修改 RSS 任务配置
+func (c *Client) ModifyRss(ctx context.Context, cfg RssConfig) error {
+	_, err := c.post(ctx, "/api/rss/modify", cfg)
 	return err
 }
 
-// DeleteRss 删除 RSS 任务
-func (c *Client) DeleteRss(id string) error {
+// DeleteRss 删除指定 RSS 任务
+func (c *Client) DeleteRss(ctx context.Context, id string) error {
 	payload := map[string]string{"id": id}
-	_, err := c.post("/api/rss/delete", payload)
+	_, err := c.post(ctx, "/api/rss/delete", payload)
 	return err
 }
 
-// DryRunRss 进行 RSS 试运行（仅检查不添加）
-// 返回匹配到的种子列表
-func (c *Client) DryRunRss(cfg RssConfig) ([]interface{}, error) {
-	resp, err := c.post("/api/rss/dryrun", cfg)
+// DryRunRss RSS 任务模拟运行，查看会选哪些种
+func (c *Client) DryRunRss(ctx context.Context, cfg RssConfig) ([]interface{}, error) {
+	resp, err := c.post(ctx, "/api/rss/dryrun", cfg)
 	if err != nil {
 		return nil, err
 	}
-
-	// 返回的是通过规则的种子列表
 	var torrents []interface{}
-	// 如果需要详细结构可以定义 Torrent 结构体，这里简略处理
-	// 但通常返回的是 JSON 数组
 	if err := json.Unmarshal(resp.Data, &torrents); err != nil {
 		return nil, err
 	}
@@ -440,27 +477,27 @@ func (c *Client) DryRunRss(cfg RssConfig) ([]interface{}, error) {
 // 选种/RSS 规则管理 API (Rule)
 // ==========================================
 
-// RSSRule RSS选种规则
+// RssRule 选种规则配置
 type RssRule struct {
 	ID                 string          `json:"id,omitempty"`
 	Alias              string          `json:"alias"`
-	Type               string          `json:"type"`               // normal, javascript, pql
-	Conditions         json.RawMessage `json:"conditions"`         // 必须包含 (Normal)
-	MustNotContain     []string        `json:"mustNotContain"`     // 如果包含则拒绝 (Normal)
-	NotContain         []string        `json:"notContain"`         // 排除 (Normal)
-	Size               string          `json:"size"`               // 大小限制 (Normal)
-	MinSize            string          `json:"minSize"`            // 最小大小
-	MaxSize            string          `json:"maxSize"`            // 最大大小
-	Code               string          `json:"code,omitempty"`     // 自定义代码 (Javascript/PQL)
-	Priority           interface{}     `json:"priority"`           // 优先级
-	Standard           bool            `json:"standard"`           // 是否标准化
-	SupportCategories  []string        `json:"supportCategories"`  // 支持的分类
-	RestrictedTrackers []string        `json:"restrictedTrackers"` // 限制的 Tracker (PQL)
+	Type               string          `json:"type"`       // 类型
+	Conditions         json.RawMessage `json:"conditions"` // 具体条件 (JSON)
+	MustNotContain     []string        `json:"mustNotContain"`
+	NotContain         []string        `json:"notContain"`
+	Size               string          `json:"size"`
+	MinSize            string          `json:"minSize"`
+	MaxSize            string          `json:"maxSize"`
+	Code               string          `json:"code,omitempty"` // 自定义代码
+	Priority           interface{}     `json:"priority"`
+	Standard           bool            `json:"standard"` // 是否标准化
+	SupportCategories  []string        `json:"supportCategories"`
+	RestrictedTrackers []string        `json:"restrictedTrackers"`
 }
 
-// ListRules 获取RSS选种规则列表
-func (c *Client) ListRssRules() ([]RssRule, error) {
-	resp, err := c.get("/api/rssRule/list", nil)
+// ListRssRules 获取所有选种规则列表
+func (c *Client) ListRssRules(ctx context.Context) ([]RssRule, error) {
+	resp, err := c.get(ctx, "/api/rssRule/list", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -471,22 +508,22 @@ func (c *Client) ListRssRules() ([]RssRule, error) {
 	return items, nil
 }
 
-// AddRule 添加RSS选种规则
-func (c *Client) AddRssRules(rule RssRule) error {
-	_, err := c.post("/api/rssRule/add", rule)
+// AddRssRules 添加选种规则
+func (c *Client) AddRssRules(ctx context.Context, rule RssRule) error {
+	_, err := c.post(ctx, "/api/rssRule/add", rule)
 	return err
 }
 
-// ModifyRule 修改RSS选种规则
-func (c *Client) ModifyRssRules(rule RssRule) error {
-	_, err := c.post("/api/rssRule/modify", rule)
+// ModifyRssRules 修改选种规则
+func (c *Client) ModifyRssRules(ctx context.Context, rule RssRule) error {
+	_, err := c.post(ctx, "/api/rssRule/modify", rule)
 	return err
 }
 
-// DeleteRule 删除RSS选种规则
-func (c *Client) DeleteRssRules(id string) error {
+// DeleteRssRules 删除选种规则
+func (c *Client) DeleteRssRules(ctx context.Context, id string) error {
 	payload := map[string]string{"id": id}
-	_, err := c.post("/api/rssRule/delete", payload)
+	_, err := c.post(ctx, "/api/rssRule/delete", payload)
 	return err
 }
 
@@ -494,24 +531,24 @@ func (c *Client) DeleteRssRules(id string) error {
 // 删种规则管理 API (Delete Rule)
 // ==========================================
 
-// DeleteRule 删种规则结构
+// DeleteRule 删种规则配置
 type DeleteRule struct {
 	ID              string          `json:"id,omitempty"`
 	Alias           string          `json:"alias"`
-	Type            string          `json:"type"`            // normal, javascript
-	Priority        interface{}     `json:"priority"`        // 优先级
-	Conditions      json.RawMessage `json:"conditions"`      // 保留规则 (Normal) 比如 "Ratio > 1"
-	Code            string          `json:"code,omitempty"`  // JS 代码
-	Maindata        string          `json:"maindata"`        // 比较主体 (Normal) e.g., "Ratio"
-	Comparetor      string          `json:"comparetor"`      // 比较符 (Normal) e.g., ">"
-	Value           interface{}     `json:"value"`           // 阈值 (Normal)
-	FitTime         interface{}     `json:"fitTime"`         // 持续时间 (秒)
-	IgnoreFreeSpace bool            `json:"ignoreFreeSpace"` // 忽略剩余空间检查
+	Type            string          `json:"type"`
+	Priority        interface{}     `json:"priority"`
+	Conditions      json.RawMessage `json:"conditions"`
+	Code            string          `json:"code,omitempty"`
+	Maindata        string          `json:"maindata"`
+	Comparetor      string          `json:"comparetor"`
+	Value           interface{}     `json:"value"`
+	FitTime         interface{}     `json:"fitTime"`
+	IgnoreFreeSpace bool            `json:"ignoreFreeSpace"`
 }
 
-// ListDeleteRules 获取删种规则列表
-func (c *Client) ListDeleteRules() ([]DeleteRule, error) {
-	resp, err := c.get("/api/deleteRule/list", nil)
+// ListDeleteRules 获取所有自动删种规则列表
+func (c *Client) ListDeleteRules(ctx context.Context) ([]DeleteRule, error) {
+	resp, err := c.get(ctx, "/api/deleteRule/list", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -523,21 +560,21 @@ func (c *Client) ListDeleteRules() ([]DeleteRule, error) {
 }
 
 // AddDeleteRule 添加删种规则
-func (c *Client) AddDeleteRule(rule DeleteRule) error {
-	_, err := c.post("/api/deleteRule/add", rule)
+func (c *Client) AddDeleteRule(ctx context.Context, rule DeleteRule) error {
+	_, err := c.post(ctx, "/api/deleteRule/add", rule)
 	return err
 }
 
 // ModifyDeleteRule 修改删种规则
-func (c *Client) ModifyDeleteRule(rule DeleteRule) error {
-	_, err := c.post("/api/deleteRule/modify", rule)
+func (c *Client) ModifyDeleteRule(ctx context.Context, rule DeleteRule) error {
+	_, err := c.post(ctx, "/api/deleteRule/modify", rule)
 	return err
 }
 
 // DeleteDeleteRuleByID 删除删种规则
-func (c *Client) DeleteDeleteRuleByID(id string) error {
+func (c *Client) DeleteDeleteRuleByID(ctx context.Context, id string) error {
 	payload := map[string]string{"id": id}
-	_, err := c.post("/api/deleteRule/delete", payload)
+	_, err := c.post(ctx, "/api/deleteRule/delete", payload)
 	return err
 }
 
@@ -545,15 +582,15 @@ func (c *Client) DeleteDeleteRuleByID(id string) error {
 // RSS 历史记录 (RSS History)
 // ==========================================
 
-// TorrentHistory 种子历史记录
+// TorrentHistory 种子推送历史记录
 type TorrentHistory struct {
 	ID         int    `json:"id"`
 	RssID      string `json:"rssId"`
-	Name       string `json:"name"`
-	Size       int64  `json:"size"`
+	Name       string `json:"name"` // 种子名
+	Size       int64  `json:"size"` // 大小
 	Link       string `json:"link"`
-	RecordType int    `json:"recordType"` // 1: RSS抓取, 2: 重新辅种, 3: ?
-	RecordNote string `json:"recordNote"`
+	RecordType int    `json:"recordType"` // 记录类型
+	RecordNote string `json:"recordNote"` // 笔记内容
 	Upload     int64  `json:"upload"`
 	Download   int64  `json:"download"`
 	Tracker    string `json:"tracker"`
@@ -563,17 +600,14 @@ type TorrentHistory struct {
 	Hash       string `json:"hash"`
 }
 
-// ListHistoryResult 历史记录返回结构
+// ListHistoryResult 历史记录查询结果
 type ListHistoryResult struct {
 	Torrents []TorrentHistory `json:"torrents"`
 	Total    int              `json:"total"`
 }
 
-// ListRssHistory 获取 RSS 运行历史
-// page: 页码
-// length: 每页数量
-// rssID: 可选，指定 RSS 任务 ID
-func (c *Client) ListRssHistory(page, length int, rssID string) (*ListHistoryResult, error) {
+// ListRssHistory 获取 RSS 推送的历史记录
+func (c *Client) ListRssHistory(ctx context.Context, page, length int, rssID string) (*ListHistoryResult, error) {
 	params := map[string]string{
 		"page":   fmt.Sprintf("%d", page),
 		"length": fmt.Sprintf("%d", length),
@@ -583,7 +617,7 @@ func (c *Client) ListRssHistory(page, length int, rssID string) (*ListHistoryRes
 		params["rss"] = rssID
 	}
 
-	resp, err := c.get("/api/torrent/listHistory", params)
+	resp, err := c.get(ctx, "/api/torrent/listHistory", params)
 	if err != nil {
 		return nil, err
 	}
@@ -599,48 +633,45 @@ func (c *Client) ListRssHistory(page, length int, rssID string) (*ListHistoryRes
 // 种子管理 API (Torrent)
 // ==========================================
 
-// Torrent 种子信息结构
+// Torrent 种子基础信息
 type Torrent struct {
-	Hash          string  `json:"hash"`           // 种子 Hash
-	Name          string  `json:"name"`           // 种子名称
-	Size          int64   `json:"size"`           // 大小 (Bytes)
-	Progress      float64 `json:"progress"`       // 进度 (0-1)
-	UploadSpeed   int64   `json:"uploadSpeed"`    // 上传速度
-	DownloadSpeed int64   `json:"downloadSpeed"`  // 下载速度
-	State         string  `json:"state"`          // 状态 (allocating, downloading, seeding, etc)
-	ClientAlias   string  `json:"clientAlias"`    // 所属客户端别名
-	Link          string  `json:"link,omitempty"` // 链接信息 (如果有)
+	Hash          string  `json:"hash"`
+	Name          string  `json:"name"`
+	Size          int64   `json:"size"`
+	Progress      float64 `json:"progress"`      // 进度 (0-1)
+	UploadSpeed   int64   `json:"uploadSpeed"`   // 上传速度 (B/s)
+	DownloadSpeed int64   `json:"downloadSpeed"` // 下载速度 (B/s)
+	State         string  `json:"state"`         // 状态 (如 seeding, downloading)
+	ClientAlias   string  `json:"clientAlias"`   // 所属下载器别名
+	Link          string  `json:"link,omitempty"`
 }
 
 // TorrentListOption 种子列表查询选项
 type TorrentListOption struct {
-	ClientList []string `json:"clientList"` // 客户端 ID 列表 (必填)
-	Page       int      `json:"page"`       // 页码 (从 1 开始)
+	ClientList []string `json:"clientList"` // 指定下载器ID列表
+	Page       int      `json:"page"`       // 页码
 	Length     int      `json:"length"`     // 每页数量
-	SearchKey  string   `json:"searchKey"`  // 搜索关键词
-	SortKey    string   `json:"sortKey"`    // 排序字段 (uploadSpeed, downloadSpeed, size, etc)
-	SortType   string   `json:"sortType"`   // 排序方式 (asc, desc)
+	SearchKey  string   `json:"searchKey"`  // 搜索关键词 (文件名)
+	SortKey    string   `json:"sortKey"`    // 排序字段
+	SortType   string   `json:"sortType"`   // 排序类型 (asc/desc)
 }
 
-// TorrentListResult 种子列表返回结果
+// TorrentListResult 种子查询结果
 type TorrentListResult struct {
 	Torrents []Torrent `json:"torrents"`
 	Total    int       `json:"total"`
 }
 
-// ListTorrents 获取种子列表
-// 注意: clientList 参数必须包含需要查询的客户端 ID
-func (c *Client) ListTorrents(opt TorrentListOption) (*TorrentListResult, error) {
-	// 构造查询参数 map
+// ListTorrents 获取种子列表，支持分页、搜索、下载器筛选
+func (c *Client) ListTorrents(ctx context.Context, opt TorrentListOption) (*TorrentListResult, error) {
 	params := make(map[string]string)
 
-	// clientList 需要手动转成 JSON 字符串
 	if len(opt.ClientList) > 0 {
 		clientListBytes, _ := json.Marshal(opt.ClientList)
 		params["clientList"] = string(clientListBytes)
 	} else {
 		// 默认查询所有客户端
-		downloaders, _ := c.ListDownloaders()
+		downloaders, _ := c.ListDownloaders(ctx)
 		var ids []string
 		for _, d := range downloaders {
 			ids = append(ids, d.ID)
@@ -662,7 +693,7 @@ func (c *Client) ListTorrents(opt TorrentListOption) (*TorrentListResult, error)
 		params["sortType"] = opt.SortType
 	}
 
-	resp, err := c.get("/api/torrent/list", params)
+	resp, err := c.get(ctx, "/api/torrent/list", params)
 	if err != nil {
 		return nil, err
 	}
@@ -674,9 +705,9 @@ func (c *Client) ListTorrents(opt TorrentListOption) (*TorrentListResult, error)
 	return &res, nil
 }
 
-// GetTorrentInfo 获取单个种子详情
-func (c *Client) GetTorrentInfo(hash string) (*Torrent, error) {
-	resp, err := c.get("/api/torrent/info", map[string]string{"hash": hash})
+// GetTorrentInfo 获取指定 Hash 的种子详情
+func (c *Client) GetTorrentInfo(ctx context.Context, hash string) (*Torrent, error) {
+	resp, err := c.get(ctx, "/api/torrent/info", map[string]string{"hash": hash})
 	if err != nil {
 		return nil, err
 	}
@@ -687,24 +718,20 @@ func (c *Client) GetTorrentInfo(hash string) (*Torrent, error) {
 	return &t, nil
 }
 
-// LinkTorrent 执行硬链接 / 整理操作
-// options 包含: hash, type (series/movie), mediaName, savePath, category 等
-func (c *Client) LinkTorrent(payload interface{}) error {
-	_, err := c.post("/api/torrent/link", payload)
+// LinkTorrent 执行种子软连接/硬连接操作
+func (c *Client) LinkTorrent(ctx context.Context, payload interface{}) error {
+	_, err := c.post(ctx, "/api/torrent/link", payload)
 	return err
 }
 
 // DeleteTorrent 删除种子
-// hash: 种子 hash
-// clientId: 客户端 ID
-// files: 需要同时删除的文件路径列表 (可选)
-func (c *Client) DeleteTorrent(hash, clientId string, deleteFiles bool) error {
+func (c *Client) DeleteTorrent(ctx context.Context, hash, clientId string, deleteFiles bool) error {
 	payload := map[string]interface{}{
 		"hash":     hash,
 		"clientId": clientId,
 		// 如果需要删除文件，需要传递 files 数组，这里简化为只删除种子
 		"files": []interface{}{},
 	}
-	_, err := c.post("/api/torrent/deleteTorrent", payload)
+	_, err := c.post(ctx, "/api/torrent/deleteTorrent", payload)
 	return err
 }

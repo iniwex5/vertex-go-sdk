@@ -1,16 +1,69 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/iniwex5/vertex-go-sdk" // 导入 SDK
-
 	"github.com/joho/godotenv"
 )
+
+var (
+	client *vertex.Client
+	ctx    = context.Background() // 使用全局 context 简化代码
+)
+
+// TestMain 是测试的入口点，负责全局初始化
+func TestMain(m *testing.M) {
+	// 1. 加载配置
+	_ = godotenv.Load()
+	host := getEnv("VERTEX_HOST", "http://127.0.0.1:3000")
+	username := getEnv("VERTEX_USER", "admin")
+	password := getEnv("VERTEX_PASS", "password")
+	cookieFile := "cookies.json"
+
+	// 2. 尝试从外部读取初始 Cookie (可空)
+	var initialCookies []*http.Cookie
+	if data, err := os.ReadFile(cookieFile); err == nil {
+		_ = json.Unmarshal(data, &initialCookies)
+	}
+
+	// 3. 执行全局初始化 (只执行一次)
+	initCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var err error
+	client, err = vertex.NewClient(initCtx, host,
+		vertex.WithAuth(username, password, initialCookies),
+		vertex.WithTimeout(15*time.Second),
+	)
+	if err != nil {
+		fmt.Printf("❌ SDK 初始化失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 4. 保存最新 Cookie 供下次复用
+	if cookies, err := client.GetCookies(); err == nil && len(cookies) > 0 {
+		if data, err := json.MarshalIndent(cookies, "", "  "); err == nil {
+			_ = os.WriteFile(cookieFile, data, 0644)
+		}
+	}
+
+	fmt.Println("✅ Vertex SDK 共享实例初始化成功，开始执行测试...")
+
+	// 5. 运行所有 TestXXX 函数
+	code := m.Run()
+
+	// 6. 测试结束
+	os.Exit(code)
+}
 
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
@@ -19,247 +72,139 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func setupClient(t *testing.T) *vertex.Client {
-	// 尝试加载 .env 文件
-	_ = godotenv.Load()
+// ---------------------------------------------------------
+// 以下测试用例直接复用全局 client，代码极简
+// ---------------------------------------------------------
 
-	host := getEnv("VERTEX_HOST", "http://127.0.0.1:3000")
-	client, err := vertex.NewClient(host)
-	if err != nil {
-		t.Fatalf("初始化客户端失败: %v", err)
-	}
+// TestServerResources 示例：获取服务器资源状态
+func TestServerResources(t *testing.T) {
+	t.Run("CPU使用率", func(t *testing.T) {
+		res, err := client.GetServerCpuUse(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("CPU: %v", res)
+	})
 
-	cookieFile := "cookies.json"
+	t.Run("内存状态", func(t *testing.T) {
+		res, err := client.GetServerMemoryUse(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("内存: %v", res)
+	})
+}
 
-	// 1. 优先尝试 Cookie 登录
-	if data, err := os.ReadFile(cookieFile); err == nil {
-		var cookies []*http.Cookie
-		if err := json.Unmarshal(data, &cookies); err == nil {
-			_ = client.SetCookies(cookies)
-			t.Log("发现本地 Cookie，尝试恢复会话...")
+// TestServerMonitoring 示例：获取更详细的监控数据 (网速, 磁盘, Vnstat)
+func TestServerMonitoring(t *testing.T) {
+	t.Run("实时网速", func(t *testing.T) {
+		speed, err := client.GetServerNetSpeed(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("当前网速详情: %v", speed)
+	})
 
-			// 验证 Session 是否有效
-			if _, err := client.ListServers(); err == nil {
-				t.Log("Cookie 有效，跳过账号密码登录")
-				return client
+	t.Run("磁盘状态", func(t *testing.T) {
+		disk, err := client.GetServerDiskUse(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("磁盘详情: %v", disk)
+	})
+
+	t.Run("流量统计(Vnstat)", func(t *testing.T) {
+		servers, _ := client.ListServers(ctx)
+		if len(servers) > 0 {
+			vnstat, err := client.GetServerVnstat(ctx, servers[0].ID)
+			if err != nil {
+				t.Logf("跳过 Vnstat: 可能未安装或暂无数据 (%v)", err)
+			} else {
+				t.Logf("Vnstat 月度流量: %v", vnstat.Month)
 			}
-			t.Log("Cookie 已失效，转为使用账号密码登录")
 		}
-	}
-
-	// 2. 账号密码登录
-	username := getEnv("VERTEX_USER", "admin")
-	password := getEnv("VERTEX_PASS", "password")
-
-	t.Logf("正在登录服务器 %s ...", host)
-	err = client.Login(username, password)
-	if err != nil {
-		t.Fatalf("登录失败: %v", err)
-	}
-	t.Log("登录成功！")
-
-	// 3. 保存新 Cookie
-	if cookies, err := client.GetCookies(); err == nil {
-		if data, err := json.MarshalIndent(cookies, "", "  "); err == nil {
-			if err := os.WriteFile(cookieFile, data, 0644); err == nil {
-				t.Log("新 Cookie 已保存到本地")
-			}
-		}
-	}
-
-	return client
+	})
 }
 
-func TestListRss(t *testing.T) {
-	client := setupClient(t)
-
-	// ==========================================
-	// 3. 获取 RSS 任务列表
-	// ==========================================
-	t.Log("正在获取 RSS 列表...")
-	rssList, err := client.ListRss()
+// TestDownloaderOps 示例：下载器高级查询
+func TestDownloaderOps(t *testing.T) {
+	// 1. 获取所有下载器
+	list, err := client.ListDownloaders(ctx)
 	if err != nil {
-		t.Fatalf("获取 RSS 列表失败: %v", err)
+		t.Fatal(err)
 	}
 
-	// ==========================================
-	// 4. 输出结果
-	// ==========================================
-	t.Logf("共找到 %d 个 RSS 任务:", len(rssList))
-	fmt.Println("------------------------------------------------")
-	for i, rss := range rssList {
-		status := "停用"
-		if rss.Enable {
-			status = "启用"
+	if len(list) > 0 {
+		d0 := list[0]
+		// 2. 按别名模糊搜索
+		matched, _ := client.FindDownloadersByAlias(ctx, d0.Alias[:len(d0.Alias)/2+1])
+		t.Logf("通过别名查找匹配数: %d", len(matched))
+
+		// 3. 提取第一个下载器的 IP (从 ClientURL 中提取)
+		u, _ := url.Parse(d0.ClientURL)
+		host := u.Host
+		if idx := strings.Index(host, ":"); idx != -1 {
+			host = host[:idx]
 		}
-		fmt.Printf("%d. [ID: %s] %s\n", i+1, rss.ID, rss.Alias)
-		fmt.Printf("   URL:  %s\n", rss.RssUrl)
-		fmt.Printf("   状态: %s\n", status)
-		// 打印一些规则信息
-		if len(rss.AcceptRules) > 0 {
-			fmt.Printf("   接受规则数: %d\n", len(rss.AcceptRules))
+
+		found, _ := client.FindDownloaderByIP(ctx, host)
+		if found != nil {
+			t.Logf("通过 IP %s 寻获下载器: %s", host, found.Alias)
 		}
-		if len(rss.RejectRules) > 0 {
-			fmt.Printf("   拒绝规则数: %d\n", len(rss.RejectRules))
-		}
-		fmt.Println("------------------------------------------------")
 	}
 }
 
-func TestListDownloaders(t *testing.T) {
-	client := setupClient(t)
-
-	t.Log("正在获取下载器列表...")
-	downloaders, err := client.ListDownloaders()
-	if err != nil {
-		t.Fatalf("获取下载器列表失败: %v", err)
-	}
-
-	t.Logf("共找到 %d 个下载器:", len(downloaders))
-	fmt.Println("------------------------------------------------")
-	for i, d := range downloaders {
-		status := "断开"
-		if d.Status {
-			status = "连接正常"
+// TestRssAdvanced 示例：RSS 规则与历史记录
+func TestRssAdvanced(t *testing.T) {
+	t.Run("RSS历史", func(t *testing.T) {
+		history, err := client.ListRssHistory(ctx, 1, 10, "")
+		if err != nil {
+			t.Fatal(err)
 		}
-		enable := "停用"
-		if d.Enable {
-			enable = "启用"
+		t.Logf("最近 RSS 历史条数: %d/总计: %d", len(history.Torrents), history.Total)
+		if len(history.Torrents) > 0 {
+			t.Logf("最新记录: %s", history.Torrents[0].Name)
 		}
-		fmt.Printf("%d. [ID: %s] %s (%s)\n", i+1, d.ID, d.Alias, d.Type)
-		fmt.Printf("   地址: %s\n", d.ClientURL)
-		fmt.Printf("   状态: %s | %s\n", enable, status)
-		fmt.Printf("   速度: ↑%.2f KB/s | ↓%.2f KB/s\n", d.UploadSpeed/1024, d.DownloadSpeed/1024)
-		fmt.Println("------------------------------------------------")
+	})
 
-	}
+	t.Run("选种规则", func(t *testing.T) {
+		rules, err := client.ListRssRules(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("共有 %d 条 RSS 选种规则", len(rules))
+	})
+
+	t.Run("删种规则", func(t *testing.T) {
+		delRules, err := client.ListDeleteRules(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("共有 %d 条自动删种规则", len(delRules))
+	})
 }
 
-func TestListRssRules(t *testing.T) {
-	client := setupClient(t)
-
-	t.Log("正在获取RSS选种规则 (Rules) 列表...")
-	rules, err := client.ListRssRules()
+// TestTorrentOps 示例：种子管理
+func TestTorrentOps(t *testing.T) {
+	// 1. 获取近期添加的种子列表
+	result, err := client.ListTorrents(ctx, vertex.TorrentListOption{
+		Page:     1,
+		Length:   10,
+		SortKey:  "addTime",
+		SortType: "desc",
+	})
 	if err != nil {
-		t.Fatalf("获取选种规则失败: %v", err)
+		t.Fatal(err)
 	}
 
-	t.Logf("共找到 %d 个选种规则:", len(rules))
-	fmt.Println("------------------------------------------------")
-	for i, r := range rules {
-		fmt.Printf("%d. [ID: %s] %s (%s)\n", i+1, r.ID, r.Alias, r.Type)
-		if len(r.Conditions) > 0 {
-			fmt.Printf("   包含关键词: %s\n", string(r.Conditions))
+	if len(result.Torrents) > 0 {
+		t0 := result.Torrents[0]
+		// 2. 获取单个种子详细信息
+		info, err := client.GetTorrentInfo(ctx, t0.Hash)
+		if err != nil {
+			t.Errorf("获取种子详情失败: %v", err)
+		} else {
+			t.Logf("种子详情: [%s] %s, 大小: %v bytes", info.State, info.Name, info.Size)
 		}
-		if len(r.MustNotContain) > 0 {
-			fmt.Printf("   拒绝关键词: %v\n", r.MustNotContain)
-		}
-		if r.Size != "" {
-			fmt.Printf("   大小限制: %s\n", r.Size)
-		}
-		fmt.Println("------------------------------------------------")
-	}
-}
-
-func TestListDeleteRules(t *testing.T) {
-	client := setupClient(t)
-
-	t.Log("正在获取删种规则 (DeleteRules) 列表...")
-	rules, err := client.ListDeleteRules()
-	if err != nil {
-		t.Fatalf("获取删种规则失败: %v", err)
-	}
-
-	t.Logf("共找到 %d 个删种规则:", len(rules))
-	fmt.Println("------------------------------------------------")
-	for i, r := range rules {
-		fmt.Printf("%d. [ID: %s] %s (%s)\n", i+1, r.ID, r.Alias, r.Type)
-		if r.Type == "normal" {
-			fmt.Printf("   逻辑: %s %s %v\n", r.Maindata, r.Comparetor, r.Value)
-			fmt.Printf("   持续时间: %v 秒\n", r.FitTime)
-		}
-		if r.IgnoreFreeSpace {
-			fmt.Println("   * 忽略剩余空间检查")
-		}
-		fmt.Println("------------------------------------------------")
-	}
-}
-
-func TestListRssHistory(t *testing.T) {
-	client := setupClient(t)
-
-	t.Log("正在获取 RSS 历史记录...")
-	// 获取第一页，每页 10 条
-	history, err := client.ListRssHistory(1, 10, "")
-	if err != nil {
-		t.Fatalf("获取 RSS 历史记录失败: %v", err)
-	}
-
-	t.Logf("共找到 %d 条历史记录 (显示前 10 条):", history.Total)
-	fmt.Println("------------------------------------------------")
-	for i, h := range history.Torrents {
-		fmt.Printf("%d. [ID: %d] %s\n", i+1, h.ID, h.Name)
-		fmt.Printf("   RSS ID: %s | 大小: %.2f GB\n", h.RssID, float64(h.Size)/1024/1024/1024)
-		fmt.Printf("   Tracker: %s\n", h.Tracker)
-		fmt.Printf("   记录时间: %d\n", h.RecordTime)
-		fmt.Println("------------------------------------------------")
-	}
-}
-
-func TestFindDownloaderByIP(t *testing.T) {
-	client := setupClient(t)
-
-	// 使用一个已知的 IP 进行测试 (根据之前的 ListDownloaders 输出)
-	targetIP := "54.36.168.17"
-	t.Logf("正在查找 IP 为 %s 的下载器...", targetIP)
-
-	downloader, err := client.FindDownloaderByIP(targetIP)
-	if err != nil {
-		t.Fatalf("查找下载器失败: %v", err)
-	}
-
-	if downloader != nil {
-		t.Logf("找到下载器: %s (ID: %s, URL: %s)", downloader.Alias, downloader.ID, downloader.ClientURL)
-	} else {
-		t.Logf("未找到 IP 为 %s 的下载器", targetIP)
-	}
-}
-
-func TestFindRssByAlias(t *testing.T) {
-	client := setupClient(t)
-
-	// 搜索关键词，例如 "M-Team"
-	searchKey := "M-Team"
-	t.Logf("正在查找名称包含 '%s' 的 RSS 任务...", searchKey)
-
-	rssList, err := client.FindRssByAlias(searchKey)
-	if err != nil {
-		t.Fatalf("查找 RSS 任务失败: %v", err)
-	}
-
-	t.Logf("共找到 %d 个匹配的 RSS 任务:", len(rssList))
-	fmt.Println("------------------------------------------------")
-	for i, rss := range rssList {
-		fmt.Printf("%d. [ID: %s] %s (URL: %s)\n", i+1, rss.ID, rss.Alias, rss.RssUrl)
-	}
-}
-
-func TestFindDownloadersByAlias(t *testing.T) {
-	client := setupClient(t)
-
-	// 搜索关键词，例如 "QB"
-	searchKey := "HZC"
-	t.Logf("正在查找名称包含 '%s' 的下载器...", searchKey)
-
-	downloaders, err := client.FindDownloadersByAlias(searchKey)
-	if err != nil {
-		t.Fatalf("查找下载器失败: %v", err)
-	}
-
-	t.Logf("共找到 %d 个匹配的下载器:", len(downloaders))
-	fmt.Println("------------------------------------------------")
-	for i, d := range downloaders {
-		fmt.Printf("%d. [ID: %s] %s (Type: %s, URL: %s)\n", i+1, d.ID, d.Alias, d.Type, d.ClientURL)
-		fmt.Println("------------------------------------------------")
 	}
 }
