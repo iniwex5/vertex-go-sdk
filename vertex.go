@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/cookiejar"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
@@ -66,6 +69,25 @@ func (c *Client) Login(username, password string) error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+// GetCookies 获取当前会话的 Cookies
+func (c *Client) GetCookies() ([]*http.Cookie, error) {
+	u, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	return c.Req.GetClient().Jar.Cookies(u), nil
+}
+
+// SetCookies 设置会话的 Cookies
+func (c *Client) SetCookies(cookies []*http.Cookie) error {
+	u, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return err
+	}
+	c.Req.GetClient().Jar.SetCookies(u, cookies)
 	return nil
 }
 
@@ -263,6 +285,52 @@ func (c *Client) ListDownloaders() ([]DownloaderInfo, error) {
 	return items, nil
 }
 
+// FindDownloaderByIP 根据 IP 查找下载器
+// ip: 目标 IP 地址
+// 返回第一个匹配的下载器信息，如果没有找到则返回 nil
+func (c *Client) FindDownloaderByIP(ip string) (*DownloaderInfo, error) {
+	downloaders, err := c.ListDownloaders()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, d := range downloaders {
+		u, err := url.Parse(d.ClientURL)
+		if err != nil {
+			continue // 忽略解析失败的 URL
+		}
+		// 获取 Host 部分 (可能是 ip:port 或只是 ip)
+		host := u.Host
+		// 如果包含端口，去除端口
+		if idx := strings.Index(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+
+		if host == ip {
+			return &d, nil
+		}
+	}
+	return nil, nil // 未找到
+}
+
+// FindDownloadersByAlias 根据别名(Alias)查找下载器
+// alias: 搜索关键词 (支持模糊匹配)
+// 返回所有别名中包含该关键词的下载器列表
+func (c *Client) FindDownloadersByAlias(searchKey string) ([]DownloaderInfo, error) {
+	downloaders, err := c.ListDownloaders()
+	if err != nil {
+		return nil, err
+	}
+
+	var matched []DownloaderInfo
+	for _, d := range downloaders {
+		if strings.Contains(d.Alias, searchKey) {
+			matched = append(matched, d)
+		}
+	}
+	return matched, nil
+}
+
 // AddDownloader 添加新的下载器
 func (c *Client) AddDownloader(cfg DownloaderConfig) error {
 	_, err := c.post("/api/downloader/add", cfg)
@@ -311,6 +379,24 @@ func (c *Client) ListRss() ([]RssConfig, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+// FindRssByAlias 根据名称(Alias)查找 RSS 任务
+// alias: 搜索关键词 (支持模糊匹配)
+// 返回所有名称中包含该关键词的 RSS 任务列表
+func (c *Client) FindRssByAlias(searchKey string) ([]RssConfig, error) {
+	rssList, err := c.ListRss()
+	if err != nil {
+		return nil, err
+	}
+
+	var matched []RssConfig
+	for _, rss := range rssList {
+		if strings.Contains(rss.Alias, searchKey) {
+			matched = append(matched, rss)
+		}
+	}
+	return matched, nil
 }
 
 // AddRss 添加 RSS 任务
