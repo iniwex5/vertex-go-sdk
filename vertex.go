@@ -54,8 +54,16 @@ func WithTimeout(d time.Duration) ClientOption {
 	}
 }
 
+// WithDebug 开启或关闭详细调试日志
+func WithDebug(enabled bool) ClientOption {
+	return func(c *Client) error {
+		c.Req.SetDebug(enabled)
+		return nil
+	}
+}
+
 // NewClient 创建一个新的 Vertex 客户端
-// ctx: 上下文用于控制请求周期
+// ctx: 上下文，用于控制请求的超时、中止和生命周期管理
 // host: 服务器地址 "http://127.0.0.1:3000"
 // opts: 可选配置，如 WithAuth
 func NewClient(ctx context.Context, host string, opts ...ClientOption) (*Client, error) {
@@ -663,7 +671,7 @@ type TorrentListResult struct {
 }
 
 // ListTorrents 获取种子列表，支持分页、搜索、下载器筛选
-func (c *Client) ListTorrents(ctx context.Context, opt TorrentListOption) (*TorrentListResult, error) {
+func (c *Client) ListTorrents(ctx context.Context, opt TorrentListOption) (*TorrentListResult, error) { // ctx: 上下文，用于控制每个 API 请求的生命周期（超时/取消）
 	params := make(map[string]string)
 
 	if len(opt.ClientList) > 0 {

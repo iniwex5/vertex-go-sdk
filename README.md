@@ -18,13 +18,21 @@
 go get github.com/iniwex5/vertex-go-sdk
 ```
 
+### 引入包
+
+在代码中通过以下路径引入：
+
+```go
+import "github.com/iniwex5/vertex-go-sdk"
+```
+
 ## 🚀 核心用法示例
 
 ### 1. 初始化与会话持久化
 SDK 内部接管了登录逻辑。推荐将 Cookie 存在变量、Redis 或文件中，初始化时传入。
 
 ```go
-ctx := context.Background()
+ctx := context.Background() // 初始化 context，用于控制 API 请求的超时、取消和生命周期管理
 
 // 传入初始 Cookie (可从 Redis/数据库读取)，若失效 SDK 会自动使用 Pass 登录
 client, err := vertex.NewClient(ctx, "http://1.2.3.4:3000",
