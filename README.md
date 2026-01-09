@@ -5,12 +5,12 @@
 ## 安装
 
 ```bash
-go get github.com/your-username/vertex-go-sdk
+go get github.com/iniwex5/vertex-go-sdk
 ```
 
 ## 使用方法
 
-### 初始化客户端
+### 1. 初始化与认证
 
 ```go
 package main
@@ -27,42 +27,154 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 登录
+	// 登录 (使用用户名和密码)
 	if err := client.Login("admin", "password"); err != nil {
 		log.Fatal(err)
 	}
-
-	// 现在可以调用 API 方法了
 }
 ```
 
-### 获取 RSS 任务列表
+### 2. 服务器管理 (Server)
 
 ```go
+// 获取服务器列表
+servers, err := client.ListServers()
+
+// 获取实时网速
+netSpeed, err := client.GetServerNetSpeed()
+
+// 获取资源使用率
+cpu, err := client.GetServerCpuUse()
+mem, err := client.GetServerMemoryUse()
+disk, err := client.GetServerDiskUse()
+
+// 获取 VnStat 流量统计
+vnstat, err := client.GetServerVnstat("server_id")
+```
+
+### 3. 下载器管理 (Downloader)
+
+```go
+// 获取下载器列表
+downloaders, err := client.ListDownloaders()
+
+// 添加下载器
+err := client.AddDownloader(vertex.DownloaderConfig{
+    Alias: "Qb",
+    Type: "qbittorrent",
+    ClientURL: "http://1.2.3.4:8080",
+    // ...
+})
+
+// 修改下载器
+err := client.ModifyDownloader(cfg)
+
+// 删除下载器
+err := client.DeleteDownloader("downloader_id")
+```
+
+### 4. RSS 任务管理
+
+```go
+// 获取 RSS 列表
 rssList, err := client.ListRss()
+
+// 添加 RSS 任务
+err := client.AddRss(vertex.RssConfig{
+    Alias: "MyRSS",
+    RssUrl: "https://example.com/rss",
+    // ...
+})
+
+// 修改 RSS 任务
+err := client.ModifyRss(cfg)
+
+// 删除 RSS 任务
+err := client.DeleteRss("rss_id")
+
+// RSS 试运行 (返回匹配的种子列表)
+torrents, err := client.DryRunRss(cfg)
+```
+
+### 5. 规则管理 (Rules)
+
+#### RSS 选种规则
+
+```go
+// 获取规则列表
+rules, err := client.ListRssRules()
+
+// 添加规则
+err := client.AddRssRules(vertex.RssRule{
+    Alias: "SizeLimit",
+    Type: "normal",
+    // ...
+})
+
+// 修改规则
+err := client.ModifyRssRules(rule)
+
+// 删除规则
+err := client.DeleteRssRules("rule_id")
+```
+
+#### 删种规则
+
+```go
+// 获取删种规则
+rules, err := client.ListDeleteRules()
+
+// 添加删种规则
+err := client.AddDeleteRule(vertex.DeleteRule{
+    Alias: "RatioCheck",
+    Type: "normal",
+    Maindata: "Ratio",
+    Comparetor: ">",
+    Value: 2.0,
+    // ...
+})
+
+// 修改删种规则
+err := client.ModifyDeleteRule(rule)
+
+// 删除删种规则
+err := client.DeleteDeleteRuleByID("rule_id")
+```
+
+### 6. 种子管理 (Torrent)
+
+```go
+// 获取种子列表 (支持分页、搜索、排序)
+res, err := client.ListTorrents(vertex.TorrentListOption{
+    Page: 1,
+    Length: 20,
+    SortKey: "uploadSpeed",
+    // ClientList: []string{"client_id"}, // 可选指定客户端
+})
+
+// 获取单个种子详情
+info, err := client.GetTorrentInfo("hash")
+
+// 执行链接/整理 (Link)
+err := client.LinkTorrent(payload)
+
+// 删除种子
+err := client.DeleteTorrent("hash", "client_id", true) // true 表示同时删除文件
+```
+
+### 7. 历史记录 (History)
+
+```go
+// 获取 RSS 运行/抓取历史
+// 参数: 页码, 每页数量, RSS ID (空字符串表示所有)
+history, err := client.ListRssHistory(1, 10, "")
 if err != nil {
     log.Fatal(err)
 }
-for _, rss := range rssList {
-    fmt.Printf("RSS 任务: %s (启用: %v)\n", rss.Alias, rss.Enable)
+fmt.Printf("总记录数: %d\n", history.Total)
+for _, t := range history.Torrents {
+    fmt.Printf("[%s] %s\n", t.RssID, t.Name)
 }
-```
-
-### 管理规则
-
-```go
-// 获取 RSS 选种规则列表
-rules, err := client.ListRssRules()
-
-// 获取删种规则列表
-delRules, err := client.ListDeleteRules()
-```
-
-### 查看历史记录
-
-```go
-// 查询第一页，每页 10 条
-history, err := client.ListRssHistory(1, 10, "")
 ```
 
 ## 功能特性
