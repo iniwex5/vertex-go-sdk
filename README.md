@@ -17,7 +17,7 @@ package main
 
 import (
 	"log"
-	"vertex-sdk"
+	"github.com/iniwex5/vertex-go-sdk"
 )
 
 func main() {
@@ -27,10 +27,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 登录 (使用用户名和密码)
+	// 方式一：登录 (使用用户名和密码)
 	if err := client.Login("admin", "password"); err != nil {
 		log.Fatal(err)
 	}
+
+	// 方式二：使用 Cookie (支持 Session 持久化)
+	// cookies := ... (从文件加载)
+	// client.SetCookies(cookies)
+	
+	// 保存 Cookie
+	// savedCookies, _ := client.GetCookies()
 }
 ```
 
@@ -58,6 +65,15 @@ vnstat, err := client.GetServerVnstat("server_id")
 // 获取下载器列表
 downloaders, err := client.ListDownloaders()
 
+// 根据 IP 查找下载器 (新增)
+d, err := client.FindDownloaderByIP("1.2.3.4")
+if d != nil {
+    fmt.Printf("Found: %s\n", d.Alias)
+}
+
+// 模糊搜索下载器 (新增)
+ds, err := client.FindDownloadersByAlias("QB")
+
 // 添加下载器
 err := client.AddDownloader(vertex.DownloaderConfig{
     Alias: "Qb",
@@ -78,6 +94,9 @@ err := client.DeleteDownloader("downloader_id")
 ```go
 // 获取 RSS 列表
 rssList, err := client.ListRss()
+
+// 模糊搜索 RSS 任务 (新增)
+matchedRss, err := client.FindRssByAlias("M-Team")
 
 // 添加 RSS 任务
 err := client.AddRss(vertex.RssConfig{
@@ -179,13 +198,12 @@ for _, t := range history.Torrents {
 
 ## 功能特性
 
-- 服务器状态监控与管理
-- 下载器管理 (由于接口限制，部分功能可能需要特定权限)
-- RSS 任务管理 (增删改查)
-- RSS 选种规则 (RSS Rules) 管理
-- 删种规则 (Delete Rules) 管理
-- 种子管理与历史记录查询
-- 系统监控 (网速、CPU、内存等)
+- **服务器状态监控**: CPU, 内存, 磁盘, 网速, VnStat
+- **下载器管理**: 增删改查, IP 反查, 别名搜索
+- **RSS 任务管理**: 增删改查, 别名搜索, 试运行
+- **规则管理**: RSS 选种规则, 自动删种规则
+- **种子管理**: 列表查询, 详情, 删种, 硬链接
+- **历史记录**: RSS 抓取与运行记录
 
 ## 许可证
 
