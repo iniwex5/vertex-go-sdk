@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"vertex-sdk" // 导入 SDK
+	"github.com/iniwex5/vertex-go-sdk" // 导入 SDK
 
 	"github.com/joho/godotenv"
 )
