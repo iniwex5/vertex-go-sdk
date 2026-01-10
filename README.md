@@ -127,9 +127,87 @@ for _, h := range history.Torrents {
 // 列出所有选种规则
 rules, _ := client.ListRssRules(ctx)
 
+// 添加 Normal 类型规则（基于条件）
+normalRule := vertex.RssRule{
+    Alias: "1GB以内的1080p种子",
+    Type:  string(vertex.RuleTypeNormal), // 使用预定义常量
+    Conditions: []vertex.RssRuleCondition{
+        {
+            Key:         "size",
+            CompareType: string(vertex.CompareTypeBigger),   // 大于
+            Value:       "1024*1024",                        // 1MB
+        },
+        {
+            Key:         "size",
+            CompareType: string(vertex.CompareTypeSmaller),  // 小于
+            Value:       "1024*1024*1024",                   // 1GB
+        },
+        {
+            Key:         "name",
+            CompareType: string(vertex.CompareTypeContain), // 包含关键词
+            Value:       "1080p",
+        },
+    },
+    Code: "(torrent) => { return false; }",
+}
+client.AddRssRules(ctx, normalRule)
+
+// 添加 JavaScript 类型规则（自定义逻辑）
+jsRule := vertex.RssRule{
+    Alias: "自定义筛选逻辑",
+    Type:  string(vertex.RuleTypeJavaScript),
+    Conditions: []vertex.RssRuleCondition{
+        {Key: "", CompareType: "", Value: ""}, // JS 类型可以有空条件
+    },
+    Code: `(torrent) => {
+  const sizeInGB = torrent.size / (1024 * 1024 * 1024);
+  return sizeInGB > 1 && sizeInGB < 50 && torrent.name.includes("1080p");
+}`,
+}
+client.AddRssRules(ctx, jsRule)
+
 // 列出所有删种规则
 deleteRules, _ := client.ListDeleteRules(ctx)
+
+// 添加 Normal 类型删种规则
+normalDelRule := vertex.DeleteRule{
+    Alias:    "删除分享率达标且上传速度慢的种子",
+    Type:     string(vertex.RuleTypeNormal),
+    Priority: 10,
+    Conditions: []vertex.DeleteRuleCondition{
+        {Key: "ratio", CompareType: string(vertex.CompareTypeBigger), Value: "2.0"},
+        {Key: "uploadSpeed", CompareType: string(vertex.CompareTypeSmaller), Value: "1024"}, // 1KB/s
+    },
+    Code: "(maindata, torrent) => { return false; }",
+}
+client.AddDeleteRule(ctx, normalDelRule)
+
+// 添加 JavaScript 类型删种规则 (高度自定义)
+jsDelRule := vertex.DeleteRule{
+    Alias:    "复杂空间管理脚本",
+    Type:     string(vertex.RuleTypeJavaScript),
+    Priority: "99", // 支持字符串或数字
+    Conditions: []vertex.DeleteRuleCondition{
+        {Key: "", CompareType: "", Value: ""},
+    },
+    Code: `(maindata, torrent) => {
+  // 复杂的业务逻辑...
+  return maindata.freeSpaceOnDisk < 10 * 1024 * 1024 * 1024 && torrent.uploadSpeed < 1024;
+}`,
+}
+client.AddDeleteRule(ctx, jsDelRule)
 ```
+
+**可用的比较类型（CompareType）：**
+- `CompareTypeEquals` - 等于
+- `CompareTypeBigger` - 大于
+- `CompareTypeSmaller` - 小于
+- `CompareTypeContain` - 包含
+- `CompareTypeIncludeIn` - 包含于 (在列表中, 以逗号分隔)
+- `CompareTypeNotContain` - 不包含
+- `CompareTypeNotIncludeIn` - 不包含于
+- `CompareTypeRegExp` - 正则表达式匹配
+- `CompareTypeNotRegExp` - 正则表达式不匹配
 
 ## 🧪 完整示例项目
 更多详尽的用例请参考项目中的 [examples/sdk_test.go](https://github.com/iniwex5/vertex-go-sdk/blob/main/examples/sdk_test.go)。

@@ -528,22 +528,43 @@ func (c *Client) DryRunRss(ctx context.Context, cfg RssConfig) ([]interface{}, e
 // 选种/RSS 规则管理 API (Rule)
 // ==========================================
 
+// CompareType RSS 规则的比较类型 (同步自 vertex 源码)
+type CompareType string
+
+const (
+	CompareTypeEquals       CompareType = "equals"       // 等于
+	CompareTypeBigger       CompareType = "bigger"       // 大于
+	CompareTypeSmaller      CompareType = "smaller"      // 小于
+	CompareTypeContain      CompareType = "contain"      // 包含
+	CompareTypeIncludeIn    CompareType = "includeIn"    // 包含于 (在列表中, 以逗号分隔)
+	CompareTypeNotContain   CompareType = "notContain"   // 不包含
+	CompareTypeNotIncludeIn CompareType = "notIncludeIn" // 不包含于
+	CompareTypeRegExp       CompareType = "regExp"       // 正则表达式匹配
+	CompareTypeNotRegExp    CompareType = "notRegExp"    // 正则表达式不匹配
+)
+
+// RuleType RSS 规则类型
+type RuleType string
+
+const (
+	RuleTypeNormal     RuleType = "normal"     // 普通规则 (基于条件)
+	RuleTypeJavaScript RuleType = "javascript" // JavaScript 自定义规则
+)
+
+// RssRuleCondition RSS 规则条件
+type RssRuleCondition struct {
+	Key         string `json:"key"`         // 字段名，如 "size", "name", "tracker" 等
+	CompareType string `json:"compareType"` // 比较类型，如 "bigger", "smaller", "contains" 等
+	Value       string `json:"value"`       // 比较值，如 "1024*1024", "1080p" 等
+}
+
 // RssRule 选种规则配置
 type RssRule struct {
-	ID                 string          `json:"id,omitempty"`
-	Alias              string          `json:"alias"`
-	Type               string          `json:"type"`       // 类型
-	Conditions         json.RawMessage `json:"conditions"` // 具体条件 (JSON)
-	MustNotContain     []string        `json:"mustNotContain"`
-	NotContain         []string        `json:"notContain"`
-	Size               string          `json:"size"`
-	MinSize            string          `json:"minSize"`
-	MaxSize            string          `json:"maxSize"`
-	Code               string          `json:"code,omitempty"` // 自定义代码
-	Priority           interface{}     `json:"priority"`
-	Standard           bool            `json:"standard"` // 是否标准化
-	SupportCategories  []string        `json:"supportCategories"`
-	RestrictedTrackers []string        `json:"restrictedTrackers"`
+	ID         string             `json:"id,omitempty"` // 规则 ID
+	Alias      string             `json:"alias"`        // 规则别名
+	Type       string             `json:"type"`         // 规则类型: "normal", "javascript" 等
+	Conditions []RssRuleCondition `json:"conditions"`   // 条件列表
+	Code       string             `json:"code"`         // 自定义 JavaScript 代码
 }
 
 // ListRssRules 获取所有选种规则列表
@@ -582,19 +603,21 @@ func (c *Client) DeleteRssRules(ctx context.Context, id string) error {
 // 删种规则管理 API (Delete Rule)
 // ==========================================
 
-// DeleteRule 删种规则配置
+// DeleteRuleCondition 自动删种规则条件
+type DeleteRuleCondition struct {
+	Key         string `json:"key"`         // 字段名，如 "uploadSpeed", "completedTime", "category"
+	CompareType string `json:"compareType"` // 比较类型，同步自 CompareType 常量
+	Value       string `json:"value"`       // 比较值
+}
+
+// DeleteRule 自动删种规则配置 (同步自最新表单结构)
 type DeleteRule struct {
-	ID              string          `json:"id,omitempty"`
-	Alias           string          `json:"alias"`
-	Type            string          `json:"type"`
-	Priority        interface{}     `json:"priority"`
-	Conditions      json.RawMessage `json:"conditions"`
-	Code            string          `json:"code,omitempty"`
-	Maindata        string          `json:"maindata"`
-	Comparetor      string          `json:"comparetor"`
-	Value           interface{}     `json:"value"`
-	FitTime         interface{}     `json:"fitTime"`
-	IgnoreFreeSpace bool            `json:"ignoreFreeSpace"`
+	ID         string                `json:"id,omitempty"` // 规则 ID
+	Alias      string                `json:"alias"`        // 规则别名
+	Type       string                `json:"type"`         // 规则类型: "normal", "javascript"
+	Priority   interface{}           `json:"priority"`     // 优先级 (数字或字符串)
+	Conditions []DeleteRuleCondition `json:"conditions"`   // 条件列表
+	Code       string                `json:"code"`         // 自定义代码 (Normal 类型下包含默认代码，JS 类型下包含业务逻辑)
 }
 
 // ListDeleteRules 获取所有自动删种规则列表

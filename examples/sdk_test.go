@@ -456,81 +456,262 @@ func TestRssCRUD(t *testing.T) {
 	})
 }
 
-// TestRssRuleCRUD 示例：演示选种规则的管理
+// TestRssRuleCRUD 示例：演示选种规则的管理（包含 normal 和 javascript 两种类型）
 func TestRssRuleCRUD(t *testing.T) {
-	alias := "SDK_Test_Rule"
-	var targetID string
+	// ===== 测试 1: Normal 类型规则（基于条件） =====
+	t.Run("Normal规则", func(t *testing.T) {
+		alias := "SDK_Test_Rule_Normal"
+		var targetID string
 
-	t.Run("Add", func(t *testing.T) {
-		rule := vertex.RssRule{
-			Alias:          alias,
-			Type:           "javascript",
-			MustNotContain: []string{"720p"},
-			Size:           "10G-50G",
-		}
-		_ = client.AddRssRules(ctx, rule)
-	})
-
-	t.Run("Find", func(t *testing.T) {
-		rules, _ := client.ListRssRules(ctx)
-		found := false
-		for _, r := range rules {
-			if r.Alias == alias {
-				targetID = r.ID
-				found = true
-				t.Logf("✅ 选种规则添加并确认成功 (ID: %s, 别名: %s)", targetID, r.Alias)
-				break
+		// 1. 【增】添加 normal 规则
+		t.Run("Add", func(t *testing.T) {
+			rule := vertex.RssRule{
+				Alias: alias,
+				Type:  string(vertex.RuleTypeNormal), // 使用常量定义
+				Conditions: []vertex.RssRuleCondition{
+					{
+						Key:         "size",
+						CompareType: string(vertex.CompareTypeBigger), // 使用常量：大于
+						Value:       "1024*1024",                      // 1MB
+					},
+					{
+						Key:         "size",
+						CompareType: string(vertex.CompareTypeSmaller), // 使用常量：小于
+						Value:       "1024*1024*1024",                  // 1GB
+					},
+					{
+						Key:         "name",
+						CompareType: string(vertex.CompareTypeContain), // 使用常量：包含
+						Value:       "1080p",
+					},
+				},
+				Code: "(torrent) => { return false; }", // normal 类型也可以有 code
 			}
-		}
-		if !found {
-			t.Error("未查到刚创建的规则")
-		}
+			err := client.AddRssRules(ctx, rule)
+			if err != nil {
+				t.Fatalf("添加 Normal 规则失败: %v", err)
+			}
+			t.Log("✅ Normal 规则添加成功")
+		})
+
+		// 2. 【查】确认添加成功
+		t.Run("Find", func(t *testing.T) {
+			rules, _ := client.ListRssRules(ctx)
+			found := false
+			for _, r := range rules {
+				if r.Alias == alias {
+					targetID = r.ID
+					found = true
+					t.Logf("✅ Normal 规则确认成功 (ID: %s, 别名: %s, 条件数: %d)", targetID, r.Alias, len(r.Conditions))
+					break
+				}
+			}
+			if !found {
+				t.Error("未查到刚创建的 Normal 规则")
+			}
+		})
+
+		// 3. 【删】清理测试数据
+		t.Run("Delete", func(t *testing.T) {
+			if targetID != "" {
+				_ = client.DeleteRssRules(ctx, targetID)
+				t.Logf("✅ Normal 规则删除成功 (ID: %s)", targetID)
+			}
+		})
 	})
 
-	t.Run("Delete", func(t *testing.T) {
-		if targetID != "" {
-			_ = client.DeleteRssRules(ctx, targetID)
-			t.Logf("✅ 选种规则删除成功 (ID: %s)", targetID)
-		}
+	// ===== 测试 2: JavaScript 类型规则 =====
+	t.Run("JavaScript规则", func(t *testing.T) {
+		alias := "SDK_Test_Rule_JS"
+		var targetID string
+
+		// 1. 【增】添加 javascript 规则
+		t.Run("Add", func(t *testing.T) {
+			rule := vertex.RssRule{
+				Alias: alias,
+				Type:  string(vertex.RuleTypeJavaScript), // 使用常量定义
+				Conditions: []vertex.RssRuleCondition{
+					{
+						Key:         "", // JavaScript 类型可以有空条件
+						CompareType: "",
+						Value:       "",
+					},
+				},
+				Code: `(torrent) => {
+  // 自定义 JavaScript 逻辑
+  const sizeInGB = torrent.size / (1024 * 1024 * 1024);
+  return sizeInGB > 1 && sizeInGB < 50 && torrent.name.includes("1080p");
+}`,
+			}
+			err := client.AddRssRules(ctx, rule)
+			if err != nil {
+				t.Fatalf("添加 JavaScript 规则失败: %v", err)
+			}
+			t.Log("✅ JavaScript 规则添加成功")
+		})
+
+		// 2. 【查】确认添加成功
+		t.Run("Find", func(t *testing.T) {
+			rules, _ := client.ListRssRules(ctx)
+			found := false
+			for _, r := range rules {
+				if r.Alias == alias {
+					targetID = r.ID
+					found = true
+					t.Logf("✅ JavaScript 规则确认成功 (ID: %s, 别名: %s, 类型: %s)", targetID, r.Alias, r.Type)
+					break
+				}
+			}
+			if !found {
+				t.Error("未查到刚创建的 JavaScript 规则")
+			}
+		})
+
+		// 3. 【删】清理测试数据
+		t.Run("Delete", func(t *testing.T) {
+			if targetID != "" {
+				_ = client.DeleteRssRules(ctx, targetID)
+				t.Logf("✅ JavaScript 规则删除成功 (ID: %s)", targetID)
+			}
+		})
 	})
 }
 
-// TestDeleteRuleCRUD 示例：演示自动删种规则的管理
+// TestDeleteRuleCRUD 示例：演示自动删种规则的管理（包含 Normal 和 JavaScript 复杂逻辑）
 func TestDeleteRuleCRUD(t *testing.T) {
-	alias := "SDK_Test_DeleteRule"
-	var targetID string
+	// ===== 测试 1: Normal 逻辑（基于条件） =====
+	t.Run("Normal逻辑", func(t *testing.T) {
+		alias := "SDK_Test_Delete_Normal"
+		var targetID string
 
-	t.Run("Add", func(t *testing.T) {
-		rule := vertex.DeleteRule{
-			Alias:      alias,
-			Type:       "javascript",
-			Maindata:   "uploadSpeed",
-			Comparetor: "less",
-			Value:      1024 * 10, // 低于 10KB/s
-		}
-		_ = client.AddDeleteRule(ctx, rule)
-	})
-
-	t.Run("Find", func(t *testing.T) {
-		rules, _ := client.ListDeleteRules(ctx)
-		found := false
-		for _, r := range rules {
-			if r.Alias == alias {
-				targetID = r.ID
-				found = true
-				t.Logf("✅ 删种规则添加并确认成功 (ID: %s, 别名: %s)", targetID, r.Alias)
-				break
+		// 1. 【增】添加 normal 删种规则
+		t.Run("Add", func(t *testing.T) {
+			rule := vertex.DeleteRule{
+				Alias:    alias,
+				Type:     string(vertex.RuleTypeNormal),
+				Priority: 0,
+				Conditions: []vertex.DeleteRuleCondition{
+					{
+						Key:         "uploadSpeed",
+						CompareType: string(vertex.CompareTypeSmaller), // 小于
+						Value:       "50*1024",                         // 50KB/s
+					},
+					{
+						Key:         "completedTime",
+						CompareType: string(vertex.CompareTypeBigger), // 大于
+						Value:       "180",                            // 180秒 (3分钟)
+					},
+					{
+						Key:         "category",
+						CompareType: string(vertex.CompareTypeNotContain), // 不包含
+						Value:       "keep",
+					},
+				},
+				Code: "(maindata, torrent) => {\n  return false;\n}",
 			}
-		}
-		if !found {
-			t.Error("未查到刚创建的规则")
-		}
+			err := client.AddDeleteRule(ctx, rule)
+			if err != nil {
+				t.Fatalf("添加 Normal 删种规则失败: %v", err)
+			}
+			t.Log("✅ Normal 删种规则添加成功")
+		})
+
+		// 2. 【查】确认存在
+		t.Run("Find", func(t *testing.T) {
+			rules, _ := client.ListDeleteRules(ctx)
+			found := false
+			for _, r := range rules {
+				if r.Alias == alias {
+					targetID = r.ID
+					found = true
+					t.Logf("✅ Normal 删种规则确认成功 (ID: %s, 别名: %s, 条件数: %d)", targetID, r.Alias, len(r.Conditions))
+					break
+				}
+			}
+			if !found {
+				t.Error("未查到刚创建的 Normal 规则")
+			}
+		})
+
+		// 3. 【删】清理
+		t.Run("Delete", func(t *testing.T) {
+			if targetID != "" {
+				_ = client.DeleteDeleteRuleByID(ctx, targetID)
+				t.Logf("✅ Normal 删种规则删除成功 (ID: %s)", targetID)
+			}
+		})
 	})
 
-	t.Run("Delete", func(t *testing.T) {
-		if targetID != "" {
-			_ = client.DeleteDeleteRuleByID(ctx, targetID)
-			t.Logf("✅ 删种规则删除成功 (ID: %s)", targetID)
-		}
+	// ===== 测试 2: JavaScript 逻辑（高度自定义） =====
+	t.Run("JavaScript逻辑", func(t *testing.T) {
+		alias := "[SDK_Test]复杂空间管理规则"
+		var targetID string
+
+		// 1. 【增】添加 JS 规则 (演示用户提供的复杂代码)
+		t.Run("Add", func(t *testing.T) {
+			rule := vertex.DeleteRule{
+				Alias:    alias,
+				Type:     string(vertex.RuleTypeJavaScript),
+				Priority: "99", // 支持字符串优先级
+				Conditions: []vertex.DeleteRuleCondition{
+					{Key: "", CompareType: "", Value: ""}, // JS 类型通常包含一个空条件占位
+				},
+				Code: `(maindata, torrent) => {
+    // 空间大于30G时，删除上传速度低于256KB的最慢已完成种子，空间小于30G时，根据档位删除最慢的种子
+    const categoryList = ["keep"]; // 不删除的保护分类
+    const minFreeSpace = 10 * 1024 * 1024 * 1024;   // 10GB
+    const maxFreeSpace = 30 * 1024 * 1024 * 1024; // 30GB
+    
+    // 基础保护逻辑
+    if (categoryList.includes(torrent.category) || torrent.uploadSpeed >= 15 * 1024 * 1024) {
+      return false; 
+    }
+
+    const getSlowestTorrent = (condition) => {
+      if (!maindata.torrents || !Array.isArray(maindata.torrents)) return null;
+      return maindata.torrents.reduce((slowest, t) => {
+        if (condition(t) && (!slowest || t.uploadSpeed < slowest.uploadSpeed)) return t;
+        return slowest;
+      }, null);
+    };
+
+    if (maindata.freeSpaceOnDisk > maxFreeSpace) {
+      const slowest = getSlowestTorrent(t => t.progress === 1 && t.uploadSpeed < 256 * 1024);
+      return torrent.hash === slowest?.hash;
+    }
+    return false;
+};`,
+			}
+			err := client.AddDeleteRule(ctx, rule)
+			if err != nil {
+				t.Fatalf("添加 JS 删种规则失败: %v", err)
+			}
+			t.Log("✅ JS 删种规则添加成功")
+		})
+
+		// 2. 【查】确认存在
+		t.Run("Find", func(t *testing.T) {
+			rules, _ := client.ListDeleteRules(ctx)
+			found := false
+			for _, r := range rules {
+				if r.Alias == alias {
+					targetID = r.ID
+					found = true
+					t.Logf("✅ JS 删种规则确认成功 (ID: %s, 别名: %s)", targetID, r.Alias)
+					break
+				}
+			}
+			if !found {
+				t.Error("未查到刚创建的 JS 规则")
+			}
+		})
+
+		// 3. 【删】清理
+		t.Run("Delete", func(t *testing.T) {
+			if targetID != "" {
+				_ = client.DeleteDeleteRuleByID(ctx, targetID)
+				t.Logf("✅ JS 删种规则删除成功 (ID: %s)", targetID)
+			}
+		})
 	})
 }
