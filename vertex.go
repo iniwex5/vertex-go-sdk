@@ -323,36 +323,43 @@ func (c *Client) GetServerVnstat(ctx context.Context, serverID string) (*VnstatI
 
 // DownloaderConfig 下载器配置信息
 type DownloaderConfig struct {
-	ID                   string   `json:"id,omitempty"`
-	Alias                string   `json:"alias"`     // 别名
-	Type                 string   `json:"type"`      // 类型 (如 qBittorrent)
-	ClientURL            string   `json:"clientUrl"` // 地址
-	Username             string   `json:"username"`
-	Password             string   `json:"password"`
-	Enable               bool     `json:"enable"`
-	PushNotify           bool     `json:"pushNotify"`         // 启用推送通知
-	Notify               string   `json:"notify"`             // 通知方式 ID
-	PushMonitor          bool     `json:"pushMonitor"`        // 启用监控频道
-	Monitor              string   `json:"monitor"`            // 监控频道 ID
-	Cron                 string   `json:"cron"`               // 信息更新周期
-	AutoReannounce       bool     `json:"autoReannounce"`     // 自动汇报
-	FirstLastPiecePrio   bool     `json:"firstLastPiecePrio"` // 先下载首尾文件块
-	SpaceAlarm           bool     `json:"spaceAlarm"`         // 空间警告
-	AlarmSpace           string   `json:"alarmSpace"`         // 空间警告阈值
-	AlarmSpaceUnit       string   `json:"alarmSpaceUnit"`     // 空间警告单位
-	MaxUploadSpeed       string   `json:"maxUploadSpeed"`     // 上传限速
-	MaxUploadSpeedUnit   string   `json:"maxUploadSpeedUnit"` // 上传限速单位
-	MaxDownloadSpeed     string   `json:"maxDownloadSpeed"`   // 下载限速
-	MaxDownloadSpeedUnit string   `json:"maxDownloadSpeedUnit"`
-	MinFreeSpace         string   `json:"minFreeSpace"`     // 最小剩余空间
-	MinFreeSpaceUnit     string   `json:"minFreeSpaceUnit"` // 最小剩余空间单位
-	MaxLeechNum          string   `json:"maxLeechNum"`      // 最大下载数量
-	AutoDelete           bool     `json:"autoDelete"`
-	AutoDeleteCron       string   `json:"autoDeleteCron"`              // 自动删种周期
-	RejectDeleteRules    []string `json:"rejectDeleteRules"`           // 拒绝删种规则
-	DeleteRules          []string `json:"deleteRules"`                 // 删种规则
-	SavePath             string   `json:"savePath"`                    // 默认保存路径
-	SameServerClients    []string `json:"sameServerClients,omitempty"` // 同服务器下载器
+	ID                    string   `json:"id,omitempty"`
+	Alias                 string   `json:"alias"` // 别名 (必填)
+	Host                  string   `json:"host,omitempty"`
+	Port                  string   `json:"port,omitempty"` // 端口
+	Type                  string   `json:"type"`           // 类型 (必填)
+	ClientURL             string   `json:"clientUrl"`      // 地址 (必填)
+	Username              string   `json:"username"`       // 用户名 (必填)
+	Password              string   `json:"password"`       // 密码 (必填)
+	Enable                bool     `json:"enable"`
+	PushNotify            bool     `json:"pushNotify"`                      // 启用推送通知
+	Notify                string   `json:"notify,omitempty"`                // 通知方式 ID
+	PushMonitor           bool     `json:"pushMonitor"`                     // 启用监控频道
+	Monitor               string   `json:"monitor,omitempty"`               // 监控频道 ID
+	Cron                  string   `json:"cron"`                            // 信息更新周期 (必填) */4 * * * *
+	AutoReannounce        bool     `json:"autoReannounce"`                  // 自动汇报 (必填)
+	AutoRecheck           bool     `json:"autoRecheck"`                     // 自动重新校验
+	RecheckCron           string   `json:"recheckCron"`                     // 重新校验周期 (必填) */3 * * * *
+	MinProgressDifference string   `json:"minProgressDifference,omitempty"` // 最小进度差异
+	MinUploadProtection   string   `json:"minUploadProtection,omitempty"`   // 最小上传保护
+	CategoryList          []string `json:"categoryList,omitempty"`          // 分类列表
+	SequentialDownload    bool     `json:"sequentialDownload"`              // 顺序下载
+	FirstLastPiecePrio    bool     `json:"firstLastPiecePrio"`              // 先下载首尾文件块
+	SpaceAlarm            bool     `json:"spaceAlarm"`                      // 空间警告
+	AlarmSpace            string   `json:"alarmSpace,omitempty"`            // 空间警告阈值
+	AlarmSpaceUnit        string   `json:"alarmSpaceUnit,omitempty"`        // 空间警告单位
+	MaxUploadSpeed        string   `json:"maxUploadSpeed,omitempty"`        // 上传限速
+	MaxUploadSpeedUnit    string   `json:"maxUploadSpeedUnit,omitempty"`    // 上传限速单位
+	MaxDownloadSpeed      string   `json:"maxDownloadSpeed,omitempty"`      // 下载限速
+	MaxDownloadSpeedUnit  string   `json:"maxDownloadSpeedUnit,omitempty"`
+	MinFreeSpace          string   `json:"minFreeSpace,omitempty"`      // 最小剩余空间
+	MinFreeSpaceUnit      string   `json:"minFreeSpaceUnit,omitempty"`  // 最小剩余空间单位
+	MaxLeechNum           string   `json:"maxLeechNum,omitempty"`       // 最大下载数量
+	AutoDelete            bool     `json:"autoDelete"`                  // (必填)
+	AutoDeleteCron        string   `json:"autoDeleteCron"`              // 自动删种周期 (必填) * * * * *
+	RejectDeleteRules     []string `json:"rejectDeleteRules,omitempty"` // 拒绝删种规则
+	DeleteRules           []string `json:"deleteRules,omitempty"`       // 删种规则
+	SameServerClients     []string `json:"sameServerClients,omitempty"` // 同服务器下载器
 }
 
 // DownloaderInfo 下载器实时状态信息
