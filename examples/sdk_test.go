@@ -331,13 +331,18 @@ func TestDownloaderCRUD(t *testing.T) {
 	// 1. 【增】添加下载器
 	t.Run("Add", func(t *testing.T) {
 		cfg := vertex.DownloaderConfig{
-			Alias:      alias,
-			Type:       "qBittorrent",
-			ClientURL:  "http://127.0.0.1:8080",
-			Username:   "admin",
-			Password:   "adminadmin",
-			Enable:     false, // 初始不启用，避免连错报错
-			AutoDelete: false,
+			Alias:              alias,
+			Type:               "qBittorrent",
+			ClientURL:          "http://127.0.0.1:8080",
+			Username:           "admin",
+			Password:           "adminadmin",
+			Enable:             true,
+			AutoDelete:         false,
+			Cron:               "*/30 * * * * *",
+			AutoReannounce:     true,
+			FirstLastPiecePrio: true,
+			MaxUploadSpeed:     "1024",
+			MaxUploadSpeedUnit: "KiB",
 		}
 
 		err := client.AddDownloader(ctx, cfg)
@@ -366,11 +371,15 @@ func TestDownloaderCRUD(t *testing.T) {
 
 		// 构造修改后的配置 (必须包含 ID)
 		updateCfg := vertex.DownloaderConfig{
-			ID:        targetID,
-			Alias:     alias + "_Updated",
-			Type:      "qBittorrent",
-			ClientURL: "http://127.0.0.1:8888", // 修改端口
-			Enable:    false,
+			ID:                 targetID,
+			Alias:              alias + "_Updated",
+			Type:               "qBittorrent",
+			ClientURL:          "http://127.0.0.1:8888", // 修改端口
+			Enable:             false,
+			Cron:               "*/20 * * * * *",
+			AutoReannounce:     false,
+			MaxUploadSpeed:     "2048",
+			MaxUploadSpeedUnit: "KiB",
 		}
 
 		err := client.ModifyDownloader(ctx, updateCfg)
